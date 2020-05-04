@@ -1,0 +1,10 @@
+obj/**
+bin/**
+Properties/**
+*.dll
+*.exe
+*.msi
+*.pb.gz
+*.runtimeconfig.json
+.vs
+.vscode
