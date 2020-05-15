@@ -9,6 +9,13 @@ symbolizing traces if set, otherwise it uses WPA defaults.
 This tool was built for processing ETW traces from Chrome, so the default values
 of the flags are based on that use case.
 
+Build with the provided Visual Studio Solution and Project.
+
+Nuget dependencies:
+- CommandLineParser v2.7.82
+- Google.Protobuf v3.11.4
+- Microsoft.Windows.EventTracing.Processing.All v1.0.0
+
 Command line flags:
 
     -o, --outputFileName            (Default: profile.pb.gz) Output file name for gzipped pprof profile.
