@@ -2,6 +2,7 @@ obj/**
 bin/**
 Properties/**
 *.dll
+*.etl
 *.exe
 *.msi
 *.pb.gz
