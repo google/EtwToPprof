@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-﻿using System;
-using System.Collections.Generic;
+using System;
 
 using CommandLine;
 
@@ -51,6 +50,10 @@ namespace EtwToPprof
               HelpText = "End of time range to export in seconds")]
       public decimal? timeEnd { get; set; }
 
+      [Option("includeProcessAndThreadIds", Required = false, Default = false,
+              HelpText = "Whether process and thread ids are included in the exported profile.")]
+      public bool includeProcessAndThreadIds { get; set; }
+
       [Value(0, MetaName = "etlFileName", Required = true,  HelpText = "ETL trace file name")]
       public string etlFileName { get; set; }
     }
@@ -79,14 +82,14 @@ namespace EtwToPprof
                           progress.ImagesTotal,
                           progress.ImagesLoaded);
         });
-        var includedProcesses = new string[] { opts.processFilter };
         symbolData.LoadSymbolsAsync(
-            SymCachePath.Automatic, SymbolPath.Automatic, symbolProgress, includedProcesses)
+            SymCachePath.Automatic, SymbolPath.Automatic, symbolProgress)
             .GetAwaiter().GetResult();
         Console.WriteLine();
 
         var profileWriter = new ProfileWriter(opts.etlFileName,
                                               opts.includeInlinedFunctions,
+                                              opts.includeProcessAndThreadIds,
                                               opts.stripSourceFileNamePrefix);
 
         var timeStart = opts.timeStart ?? 0;

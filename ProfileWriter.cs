@@ -32,9 +32,11 @@ namespace EtwToPprof
   {
     public ProfileWriter(string etlFileName,
                          bool includeInlinedFunctions,
+                         bool includeProcessAndThreadIds,
                          string stripSourceFileNamePrefix)
     {
       this.includeInlinedFunctions = includeInlinedFunctions;
+      this.includeProcessAndThreadIds = includeProcessAndThreadIds;
 
       stripSourceFileNamePrefixRegex = new Regex(stripSourceFileNamePrefix,
                                                  RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -70,21 +72,50 @@ namespace EtwToPprof
         {
           if (stackFrame.HasValue)
           {
+            var imageName = sample.Image?.FileName;
+            if (imageName == null)
+              imageName = "<unknown>";
             sampleProto.LocationId.Add(
-              GetLocationId(sample.Process, stackFrame.Address, stackFrame.Symbol));
+              GetLocationId(sample.Process.Id,
+                            imageName,
+                            stackFrame.Address,
+                            stackFrame.Symbol));
           }
         }
         string threadName = sample.Thread?.Name;
         if (threadName == "" || threadName == null)
         {
-          threadName = String.Format("thread ({0})", sample.Thread?.Id ?? 0);
+          if (includeProcessAndThreadIds)
+          {
+            threadName = String.Format("thread ({0})", sample.Thread?.Id ?? 0);
+          }
+          else
+          {
+            threadName = "anonymous thread";
+          }
         }
         sampleProto.LocationId.Add(
-          GetLocationId(sample.Process, sample.Thread.StartAddress, null, threadName));
+          GetLocationId(sample.Process.Id,
+                        sample.Process.ImageName,
+                        sample.Thread.StartAddress,
+                        null,
+                        threadName));
 
-        string processName = String.Format("{0} ({1})", sample.Process.ImageName, sample.Process.Id);
+        string processName;
+        if (includeProcessAndThreadIds)
+        {
+          processName = String.Format("{0} ({1})", sample.Process.ImageName, sample.Process.Id);
+        }
+        else
+        {
+          processName = sample.Process.ImageName;
+        }
         sampleProto.LocationId.Add(
-          GetLocationId(sample.Process, sample.Process.ObjectAddress, null, processName));
+          GetLocationId(sample.Process.Id,
+                        sample.Process.ImageName,
+                        sample.Process.ObjectAddress,
+                        null,
+                        processName));
       }
 
       profile.Sample.Add(sampleProto);
@@ -134,20 +165,19 @@ namespace EtwToPprof
       }
     }
 
-    ulong GetLocationId(IProcess process,
+    ulong GetLocationId(int processId,
+                        string imageName,
                         Address address,
                         IStackSymbol stackSymbol,
-                        string pseudoFunctionName = null)    {
-      ulong locationId;
-      var imageName = stackSymbol?.Image.FileName;
-      if (imageName == null)
-        imageName = process.ImageName;
-
+                        string pseudoFunctionName = null)
+    {
       var functionName = stackSymbol?.FunctionName;
       if (functionName == null)
         functionName = pseudoFunctionName;
 
-      var location = new Location(process.Id, address, imageName, functionName);
+      var location = new Location(processId, address, imageName, functionName);
+
+      ulong locationId;
       if (!locations.TryGetValue(location, out locationId))
       {
         var locationProto = new pb.Location();
@@ -158,9 +188,9 @@ namespace EtwToPprof
         {
           foreach (var inlineFunctionName in stackSymbol.InlinedFunctionNames)
           {
-              line = new pb.Line();
-              line.FunctionId = GetFunctionId(imageName, inlineFunctionName);
-              locationProto.Line.Add(line);
+            line = new pb.Line();
+            line.FunctionId = GetFunctionId(imageName, inlineFunctionName);
+            locationProto.Line.Add(line);
           }
         }
         line = new pb.Line();
@@ -250,7 +280,9 @@ namespace EtwToPprof
     Dictionary<string, long> strings;
     long nextStringId;
 
-    bool includeInlinedFunctions;
+    private readonly bool includeInlinedFunctions;
+    private readonly bool includeProcessAndThreadIds;
+
     Regex stripSourceFileNamePrefixRegex;
 
     pb.Profile profile;
