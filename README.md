@@ -1,22 +1,24 @@
 # EtwToPprof
 
-EtwToPprof exports ETW traces to pprof protobuf format.  It uses the [.NET
+EtwToPprof exports ETW traces to pprof protobuf format. It uses the [.NET
 TraceProcessing
 API](https://www.nuget.org/packages/Microsoft.Windows.EventTracing.Processing.All)
-to process ETW traces.  It uses _NT_SYMCACHE_PATH and _NT_SYMBOL_PATH for
-symbolizing traces if set, otherwise it uses WPA defaults.
+to process ETW traces.
 
 This tool was built for processing ETW traces from Chrome, so the default values
-of the flags are based on that use case.
+of the flags are based on that use case. It uses _NT_SYMCACHE_PATH and _NT_SYMBOL_PATH for
+symbolizing traces if set, otherwise it uses WPA defaults.
 
-Build with the provided Visual Studio Solution and Project.
+## Building:
 
-Nuget dependencies:
+Build the provided Visual Studio Solution with VS 2019.
+
+### Nuget dependencies (included in solution):
 - CommandLineParser v2.7.82
 - Google.Protobuf v3.11.4
 - Microsoft.Windows.EventTracing.Processing.All v1.0.0
 
-Command line flags:
+## Command line flags:
 
     -o, --outputFileName            (Default: profile.pb.gz) Output file name for gzipped pprof profile.
 
@@ -37,3 +39,7 @@ Command line flags:
     --version                       Display version information.
 
     etlFileName (pos. 0)            Required. ETL trace file name
+
+## Disclaimer:
+
+**This is not an officially supported Google product.**
