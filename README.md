@@ -14,7 +14,7 @@ symbolizing traces if set, otherwise it uses WPA defaults.
 Build the provided Visual Studio Solution with VS 2019.
 
 ### Nuget dependencies (included in solution):
-- CommandLineParser v2.7.82
+- CommandLineParser v2.8.0
 - Google.Protobuf v3.11.4
 - Microsoft.Windows.EventTracing.Processing.All v1.0.0
 
