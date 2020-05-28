@@ -1,4 +1,4 @@
-// Copyright 2020 Google LLC
+﻿// Copyright 2020 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-﻿using Google.Protobuf;
+using Google.Protobuf;
 using pb = Google.Pprof.Protobuf;
 
 using Microsoft.Windows.EventTracing;
@@ -66,56 +66,39 @@ namespace EtwToPprof
     {
       var sampleProto = new pb.Sample();
       sampleProto.Value.Add(sample.Weight.Nanoseconds);
-      if (sample.Stack != null)
+      if (sample.Stack != null && sample.Stack.Frames.Count != 0)
       {
+        int processId = sample.Process.Id;
+        string processName = sample.Process.ImageName;
         foreach (var stackFrame in sample.Stack.Frames)
         {
-          if (stackFrame.HasValue)
+          if (stackFrame.HasValue && stackFrame.Symbol != null)
           {
-            var imageName = sample.Image?.FileName;
-            if (imageName == null)
-              imageName = "<unknown>";
-            sampleProto.LocationId.Add(
-              GetLocationId(sample.Process.Id,
-                            imageName,
-                            stackFrame.Address,
-                            stackFrame.Symbol));
-          }
-        }
-        string threadName = sample.Thread?.Name;
-        if (threadName == "" || threadName == null)
-        {
-          if (includeProcessAndThreadIds)
-          {
-            threadName = String.Format("thread ({0})", sample.Thread?.Id ?? 0);
+            sampleProto.LocationId.Add(GetLocationId(stackFrame.Symbol));
           }
           else
           {
-            threadName = "anonymous thread";
+            sampleProto.LocationId.Add(
+              GetPseudoLocationId(processId, processName, null, "<unknown>"));
           }
         }
-        sampleProto.LocationId.Add(
-          GetLocationId(sample.Process.Id,
-                        sample.Process.ImageName,
-                        sample.Thread.StartAddress,
-                        null,
-                        threadName));
-
-        string processName;
+        string threadLabel = sample.Thread?.Name;
+        if (threadLabel == null || threadLabel == "")
+          threadLabel = "anonymous thread";
         if (includeProcessAndThreadIds)
         {
-          processName = String.Format("{0} ({1})", sample.Process.ImageName, sample.Process.Id);
-        }
-        else
-        {
-          processName = sample.Process.ImageName;
+          threadLabel = String.Format("{0} ({1})", threadLabel, sample.Thread?.Id ?? 0);
         }
         sampleProto.LocationId.Add(
-          GetLocationId(sample.Process.Id,
-                        sample.Process.ImageName,
-                        sample.Process.ObjectAddress,
-                        null,
-                        processName));
+          GetPseudoLocationId(processId, processName, sample.Thread?.StartAddress, threadLabel));
+
+        string processLabel = processName;
+        if (includeProcessAndThreadIds)
+        {
+          processLabel = String.Format("{0} ({1})", processName, processId);
+        }
+        sampleProto.LocationId.Add(
+          GetPseudoLocationId(processId, processName, sample.Process.ObjectAddress, processLabel));
       }
 
       profile.Sample.Add(sampleProto);
@@ -138,53 +121,75 @@ namespace EtwToPprof
 
     readonly struct Location
     {
-      public Location(int processId, Address address, string imageName, string functionName)
+      public Location(int processId, string imagePath, Address? functionAddress, string functionName)
       {
         ProcessId = processId;
-        Address = address;
-        ImageName = imageName;
+        ImagePath = imagePath;
+        FunctionAddress = functionAddress;
         FunctionName = functionName;
       }
       int ProcessId { get; }
-      Address Address { get; }
-      string ImageName { get; }
+      string ImagePath { get; }
+      Address? FunctionAddress { get; }
       string FunctionName { get; }
 
       public override bool Equals(object other)
       {
         return other is Location l
                && l.ProcessId == ProcessId
-               && l.Address == Address
-               && l.ImageName == ImageName
+               && l.ImagePath == ImagePath
+               && l.FunctionAddress == FunctionAddress
                && l.FunctionName == FunctionName;
       }
 
       public override int GetHashCode()
       {
-        return (ProcessId, Address, ImageName, FunctionName).GetHashCode();
+        return (ProcessId, ImagePath, FunctionAddress, FunctionName).GetHashCode();
       }
     }
 
-    ulong GetLocationId(int processId,
-                        string imageName,
-                        Address address,
-                        IStackSymbol stackSymbol,
-                        string pseudoFunctionName = null)
+    ulong GetPseudoLocationId(int processId, string processName, Address? address, string label)
     {
-      var functionName = stackSymbol?.FunctionName;
-      if (functionName == null)
-        functionName = pseudoFunctionName;
+      var location = new Location(processId, processName, address, label);
+      ulong locationId;
+      if (!locations.TryGetValue(location, out locationId))
+      {
+        locationId = nextLocationId++;
+        locations.Add(location, locationId);
 
-      var location = new Location(processId, address, imageName, functionName);
+        var locationProto = new pb.Location();
+        locationProto.Id = locationId;
+
+        var line = new pb.Line();
+        line.FunctionId = GetFunctionId(Path.GetFileName(processName), label);
+        locationProto.Line.Add(line);
+
+        profile.Location.Add(locationProto);
+      }
+      return locationId;
+    }
+
+    ulong GetLocationId(IStackSymbol stackSymbol)
+    {
+      var processId = stackSymbol.Image?.ProcessId ?? 0;
+      var imageName = stackSymbol.Image?.FileName;
+      var imagePath = stackSymbol.Image?.Path ?? "<unknown>";
+      var functionAddress = stackSymbol.AddressRange.BaseAddress;
+      var functionName = stackSymbol.FunctionName;
+
+      var location = new Location(processId, imagePath, functionAddress, functionName);
 
       ulong locationId;
       if (!locations.TryGetValue(location, out locationId))
       {
+        locationId = nextLocationId++;
+        locations.Add(location, locationId);
+
         var locationProto = new pb.Location();
-        locationProto.Id = nextLocationId++;
+        locationProto.Id = locationId;
 
         pb.Line line;
-        if (includeInlinedFunctions && stackSymbol?.InlinedFunctionNames != null)
+        if (includeInlinedFunctions && stackSymbol.InlinedFunctionNames != null)
         {
           foreach (var inlineFunctionName in stackSymbol.InlinedFunctionNames)
           {
@@ -194,12 +199,10 @@ namespace EtwToPprof
           }
         }
         line = new pb.Line();
-        line.FunctionId = GetFunctionId(imageName, functionName, stackSymbol?.SourceFileName);
-        line.Line_ = stackSymbol?.SourceLineNumber ?? 0;
+        line.FunctionId = GetFunctionId(imageName, functionName, stackSymbol.SourceFileName);
+        line.Line_ = stackSymbol.SourceLineNumber;
         locationProto.Line.Add(line);
 
-        locationId = locationProto.Id;
-        locations.Add(location, locationId);
         profile.Location.Add(locationProto);
       }
       return locationId;
