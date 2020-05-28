@@ -13,6 +13,7 @@
 // limitations under the License.
 
 using System;
+using System.Collections.Generic;
 
 using CommandLine;
 
@@ -30,9 +31,9 @@ namespace EtwToPprof
               HelpText = "Output file name for gzipped pprof profile.")]
       public string outputFileName { get; set; }
 
-      [Option('p', "processFilter", Required = false, Default = "chrome.exe",
-              HelpText = "Filter for process name to be included in the exported profile.")]
-      public string processFilter { get; set; }
+      [Option('p', "processFilter", Required = false, Separator = ',', Default = "chrome.exe,dwm.exe,audiodg.exe",
+              HelpText = "Filter for process name to be included in the exported profile. All processes will be exported if empty.")]
+      public IEnumerable<string> processFilter { get; set; }
 
       [Option("includeInlinedFunctions", Required = false, Default = false,
               HelpText = "Whether inlined functions should be included in the exported profile (slow).")]
@@ -54,7 +55,7 @@ namespace EtwToPprof
               HelpText = "Whether process and thread ids are included in the exported profile.")]
       public bool includeProcessAndThreadIds { get; set; }
 
-      [Value(0, MetaName = "etlFileName", Required = true,  HelpText = "ETL trace file name")]
+      [Value(0, MetaName = "etlFileName", Required = true,  HelpText = "ETL trace file name.")]
       public string etlFileName { get; set; }
     }
 
@@ -94,6 +95,7 @@ namespace EtwToPprof
 
         var timeStart = opts.timeStart ?? 0;
         var timeEnd = opts.timeEnd ?? decimal.MaxValue;
+        var processFilterSet = new HashSet<string>(opts.processFilter);
 
         for (int i = 0; i < cpuSampleData.Samples.Count; i++)
         {
@@ -108,8 +110,8 @@ namespace EtwToPprof
                 (cpuSample.IsExecutingInterruptServicingRoutine ?? false))
                 continue;
 
-            if (cpuSample.Process.ImageName != opts.processFilter)
-                continue;
+            if (processFilterSet.Count != 0 && !processFilterSet.Contains(cpuSample.Process.ImageName))
+              continue;
 
             var timestamp = cpuSample.Timestamp.RelativeTimestamp.TotalSeconds;
             if (timestamp < timeStart || timestamp > timeEnd)
