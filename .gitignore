@@ -1,6 +1,7 @@
 obj/**
 bin/**
 Properties/**
+*.csproj.user
 *.dll
 *.etl
 *.exe
