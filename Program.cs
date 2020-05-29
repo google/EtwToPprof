@@ -16,6 +16,7 @@ using System;
 using System.Collections.Generic;
 
 using CommandLine;
+using CommandLine.Text;
 
 using Microsoft.Windows.EventTracing;
 using Microsoft.Windows.EventTracing.Symbols;
@@ -27,13 +28,35 @@ namespace EtwToPprof
   {
     class Options
     {
+      [Usage(ApplicationAlias = "EtwToPprof")]
+      public static IEnumerable<Example> Examples
+      {
+        get
+        {
+          return new List<Example>() {
+            new Example("Export to specified pprof profile using default options", new UnParserSettings { PreferShortName = true },
+              new Options { etlFileName = "trace.etl", outputFileName = "profile.pb.gz" }),
+            new Example("Export samples from specified process names", new UnParserSettings { PreferShortName = true },
+              new Options { etlFileName = "trace.etl", processFilter = "viz_perftests.exe,dwm.exe" }),
+            new Example("Export samples from all processes from 10s to 30s", new UnParserSettings { PreferShortName = true },
+              new Options { etlFileName = "trace.etl", processFilter = "*", timeStart = 10, timeEnd = 30 }),
+            new Example("Export inlined functions and thread/process ids", new UnParserSettings { PreferShortName = true },
+              new Options { etlFileName = "trace.etl", includeInlinedFunctions = true, includeProcessAndThreadIds = true})
+          };
+        }
+      }
+
+      [Value(0, MetaName = "etlFileName", Required = true, HelpText = "ETL trace file name.")]
+      public string etlFileName { get; set; }
+
       [Option('o', "outputFileName", Required = false, Default = "profile.pb.gz",
               HelpText = "Output file name for gzipped pprof profile.")]
       public string outputFileName { get; set; }
 
-      [Option('p', "processFilter", Required = false, Separator = ',', Default = "chrome.exe,dwm.exe,audiodg.exe",
-              HelpText = "Filter for process name to be included in the exported profile. All processes will be exported if empty.")]
-      public IEnumerable<string> processFilter { get; set; }
+      [Option('p', "processFilter", Required = false, Default = "chrome.exe,dwm.exe,audiodg.exe",
+              HelpText = "Filter for process names (comma-separated) to be included in the exported profile. "
+                         + "All processes will be exported if set to *.")]
+      public string processFilter { get; set; }
 
       [Option("includeInlinedFunctions", Required = false, Default = false,
               HelpText = "Whether inlined functions should be included in the exported profile (slow).")]
@@ -54,9 +77,6 @@ namespace EtwToPprof
       [Option("includeProcessAndThreadIds", Required = false, Default = false,
               HelpText = "Whether process and thread ids are included in the exported profile.")]
       public bool includeProcessAndThreadIds { get; set; }
-
-      [Value(0, MetaName = "etlFileName", Required = true,  HelpText = "ETL trace file name.")]
-      public string etlFileName { get; set; }
     }
 
     static void Main(string[] args)
@@ -76,12 +96,13 @@ namespace EtwToPprof
         ISymbolDataSource symbolData = pendingSymbolData.Result;
         ICpuSampleDataSource cpuSampleData = pendingCpuSampleData.Result;
 
-        var symbolProgress = new Progress<SymbolLoadingProgress>(progress => {
-            Console.Write("\r{0:P} {1} of {2} symbols processed ({3} loaded)",
-                          (double)progress.ImagesProcessed / progress.ImagesTotal,
-                          progress.ImagesProcessed,
-                          progress.ImagesTotal,
-                          progress.ImagesLoaded);
+        var symbolProgress = new Progress<SymbolLoadingProgress>(progress =>
+        {
+          Console.Write("\r{0:P} {1} of {2} symbols processed ({3} loaded)",
+                        (double)progress.ImagesProcessed / progress.ImagesTotal,
+                        progress.ImagesProcessed,
+                        progress.ImagesTotal,
+                        progress.ImagesLoaded);
         });
         symbolData.LoadSymbolsAsync(
             SymCachePath.Automatic, SymbolPath.Automatic, symbolProgress)
@@ -95,29 +116,33 @@ namespace EtwToPprof
 
         var timeStart = opts.timeStart ?? 0;
         var timeEnd = opts.timeEnd ?? decimal.MaxValue;
-        var processFilterSet = new HashSet<string>(opts.processFilter);
+
+        var exportAllProcesses = opts.processFilter == "*";
+        var processFilterSet = new HashSet<string>(
+            opts.processFilter.Trim().Split(",", StringSplitOptions.RemoveEmptyEntries));
 
         for (int i = 0; i < cpuSampleData.Samples.Count; i++)
         {
-            if (i % 100 == 0) {
-                Console.Write("\r{0:P} {1} of {2} samples processed",
-                    (double)i / cpuSampleData.Samples.Count, i, cpuSampleData.Samples.Count);
-            }
+          if (i % 100 == 0)
+          {
+            Console.Write("\r{0:P} {1} of {2} samples processed",
+                (double)i / cpuSampleData.Samples.Count, i, cpuSampleData.Samples.Count);
+          }
 
-            var cpuSample = cpuSampleData.Samples[i];
+          var cpuSample = cpuSampleData.Samples[i];
 
-            if ((cpuSample.IsExecutingDeferredProcedureCall ?? false) ||
-                (cpuSample.IsExecutingInterruptServicingRoutine ?? false))
-                continue;
+          if ((cpuSample.IsExecutingDeferredProcedureCall ?? false) ||
+              (cpuSample.IsExecutingInterruptServicingRoutine ?? false))
+            continue;
 
-            if (processFilterSet.Count != 0 && !processFilterSet.Contains(cpuSample.Process.ImageName))
-              continue;
+          if (!exportAllProcesses && !processFilterSet.Contains(cpuSample.Process.ImageName))
+            continue;
 
-            var timestamp = cpuSample.Timestamp.RelativeTimestamp.TotalSeconds;
-            if (timestamp < timeStart || timestamp > timeEnd)
-                continue;
+          var timestamp = cpuSample.Timestamp.RelativeTimestamp.TotalSeconds;
+          if (timestamp < timeStart || timestamp > timeEnd)
+            continue;
 
-            profileWriter.AddSample(cpuSample);
+          profileWriter.AddSample(cpuSample);
         }
         Console.WriteLine();
 
