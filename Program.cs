@@ -14,6 +14,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 using CommandLine;
 using CommandLine.Text;
@@ -135,8 +136,16 @@ namespace EtwToPprof
               (cpuSample.IsExecutingInterruptServicingRoutine ?? false))
             continue;
 
-          if (!exportAllProcesses && !processFilterSet.Contains(cpuSample.Process.ImageName))
-            continue;
+          if (!exportAllProcesses)
+          {
+            var processImage = cpuSample.Process.Images
+                .FirstOrDefault(image => image.FileName == cpuSample.Process.ImageName);
+
+            string imagePath = processImage?.Path ?? cpuSample.Process.ImageName;
+
+            if (!processFilterSet.Any(filter => imagePath.Contains(filter.Replace("/", "\\"))))
+              continue;
+          }
 
           var timestamp = cpuSample.Timestamp.RelativeTimestamp.TotalSeconds;
           if (timestamp < timeStart || timestamp > timeEnd)
