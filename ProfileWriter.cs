@@ -69,7 +69,6 @@ namespace EtwToPprof
       if (sample.Stack != null && sample.Stack.Frames.Count != 0)
       {
         int processId = sample.Process.Id;
-        string processName = sample.Process.ImageName;
         foreach (var stackFrame in sample.Stack.Frames)
         {
           if (stackFrame.HasValue && stackFrame.Symbol != null)
@@ -78,10 +77,13 @@ namespace EtwToPprof
           }
           else
           {
+            string imageName = stackFrame.Image?.FileName ?? "<unknown>";
+            string functionLabel = "<unknown>";
             sampleProto.LocationId.Add(
-              GetPseudoLocationId(processId, processName, null, "<unknown>"));
+              GetPseudoLocationId(processId, imageName, null, functionLabel));
           }
         }
+        string processName = sample.Process.ImageName;
         string threadLabel = sample.Thread?.Name;
         if (threadLabel == null || threadLabel == "")
           threadLabel = "anonymous thread";
@@ -148,9 +150,9 @@ namespace EtwToPprof
       }
     }
 
-    ulong GetPseudoLocationId(int processId, string processName, Address? address, string label)
+    ulong GetPseudoLocationId(int processId, string imageName, Address? address, string label)
     {
-      var location = new Location(processId, processName, address, label);
+      var location = new Location(processId, imageName, address, label);
       ulong locationId;
       if (!locations.TryGetValue(location, out locationId))
       {
@@ -161,7 +163,7 @@ namespace EtwToPprof
         locationProto.Id = locationId;
 
         var line = new pb.Line();
-        line.FunctionId = GetFunctionId(Path.GetFileName(processName), label);
+        line.FunctionId = GetFunctionId(imageName, label);
         locationProto.Line.Add(line);
 
         profile.Location.Add(locationProto);
