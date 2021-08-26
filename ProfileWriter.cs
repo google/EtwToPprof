@@ -24,21 +24,30 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace EtwToPprof
 {
   class ProfileWriter
   {
-    public ProfileWriter(string etlFileName,
-                         bool includeInlinedFunctions,
-                         bool includeProcessAndThreadIds,
-                         string stripSourceFileNamePrefix)
+    public struct Options
     {
-      this.includeInlinedFunctions = includeInlinedFunctions;
-      this.includeProcessAndThreadIds = includeProcessAndThreadIds;
+      public string etlFileName { get; set; }
+      public bool includeInlinedFunctions { get; set; }
+      public bool includeProcessIds { get; set; }
+      public bool includeProcessAndThreadIds { get; set; }
+      public string stripSourceFileNamePrefix { get; set; }
+      public decimal timeStart { get; set; }
+      public decimal timeEnd { get; set; }
+      public HashSet<string> processFilterSet { get; set; }
+    }
 
-      stripSourceFileNamePrefixRegex = new Regex(stripSourceFileNamePrefix,
+    public ProfileWriter(Options options)
+    {
+      this.options = options;
+
+      stripSourceFileNamePrefixRegex = new Regex(options.stripSourceFileNamePrefix,
                                                  RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
       profile = new pb.Profile();
@@ -52,9 +61,6 @@ namespace EtwToPprof
       cpuTimeValueType.Unit = GetStringId("nanoseconds");
       profile.SampleType.Add(cpuTimeValueType);
 
-      profile.Comment.Add(
-        GetStringId(String.Format("Converted by EtwToPprof from {0}", Path.GetFileName(etlFileName))));
-
       locations = new Dictionary<Location, ulong>();
       nextLocationId = 1;
 
@@ -64,6 +70,28 @@ namespace EtwToPprof
 
     public void AddSample(ICpuSample sample)
     {
+      if ((sample.IsExecutingDeferredProcedureCall ?? false) ||
+          (sample.IsExecutingInterruptServicingRoutine ?? false))
+        return;
+
+      var timestamp = sample.Timestamp.RelativeTimestamp.TotalSeconds;
+      if (timestamp < options.timeStart || timestamp > options.timeEnd)
+        return;
+
+      if (options.processFilterSet?.Count != 0)
+      {
+        var processImage = sample.Process.Images.FirstOrDefault(
+            image => image.FileName == sample.Process.ImageName);
+
+        string imagePath = processImage?.Path ?? sample.Process.ImageName;
+
+        if (!options.processFilterSet.Any(filter => imagePath.Contains(filter.Replace("/", "\\"))))
+          return;
+      }
+
+      wallTimeStart = Math.Min(wallTimeStart, timestamp);
+      wallTimeEnd = Math.Max(wallTimeEnd, timestamp);
+
       var sampleProto = new pb.Sample();
       sampleProto.Value.Add(sample.Weight.Nanoseconds);
       if (sample.Stack != null && sample.Stack.Frames.Count != 0)
@@ -87,7 +115,7 @@ namespace EtwToPprof
         string threadLabel = sample.Thread?.Name;
         if (threadLabel == null || threadLabel == "")
           threadLabel = "anonymous thread";
-        if (includeProcessAndThreadIds)
+        if (options.includeProcessAndThreadIds)
         {
           threadLabel = String.Format("{0} ({1})", threadLabel, sample.Thread?.Id ?? 0);
         }
@@ -95,12 +123,41 @@ namespace EtwToPprof
           GetPseudoLocationId(processId, processName, sample.Thread?.StartAddress, threadLabel));
 
         string processLabel = processName;
-        if (includeProcessAndThreadIds)
+        if (options.includeProcessIds || options.includeProcessAndThreadIds)
         {
           processLabel = String.Format("{0} ({1})", processName, processId);
         }
         sampleProto.LocationId.Add(
           GetPseudoLocationId(processId, processName, sample.Process.ObjectAddress, processLabel));
+
+        if (processThreadCpuTimes.ContainsKey(processLabel))
+        {
+          Dictionary<string, decimal> threadCpuTimes = processThreadCpuTimes[processLabel];
+          if (threadCpuTimes.ContainsKey(threadLabel))
+          {
+            threadCpuTimes[threadLabel] += sample.Weight.TotalMilliseconds;
+          }
+          else
+          {
+            threadCpuTimes[threadLabel] = sample.Weight.TotalMilliseconds;
+          }
+        }
+        else
+        {
+          processThreadCpuTimes[processLabel] = new Dictionary<string, decimal>();
+          processThreadCpuTimes[processLabel][threadLabel] = sample.Weight.TotalMilliseconds;
+        }
+
+        if (processCpuTimes.ContainsKey(processLabel))
+        {
+          processCpuTimes[processLabel] += sample.Weight.TotalMilliseconds;
+        }
+        else
+        {
+          processCpuTimes[processLabel] = sample.Weight.TotalMilliseconds;
+        }
+
+        totalCpuTime += sample.Weight.TotalMilliseconds;
       }
 
       profile.Sample.Add(sampleProto);
@@ -108,6 +165,37 @@ namespace EtwToPprof
 
     public long Write(string outputFileName)
     {
+      profile.Comment.Add(GetStringId($"Converted by EtwToPprof from {Path.GetFileName(options.etlFileName)}"));
+      if (wallTimeStart < wallTimeEnd)
+      {
+        decimal wallTimeMs = (wallTimeEnd - wallTimeStart) * 1000;
+        profile.Comment.Add(GetStringId($"Wall time {wallTimeMs:F} ms"));
+        profile.Comment.Add(GetStringId($"CPU time {totalCpuTime:F} ms ({totalCpuTime / wallTimeMs:P})"));
+
+        var sortedProcesses = processCpuTimes.Keys.ToList();
+        sortedProcesses.Sort((a, b) => -processCpuTimes[a].CompareTo(processCpuTimes[b]));
+
+        foreach (var processLabel in sortedProcesses)
+        {
+          decimal processCpuTime = processCpuTimes[processLabel];
+          profile.Comment.Add(GetStringId($"  {processLabel} {processCpuTime:F} ms ({processCpuTime / wallTimeMs:P})"));
+
+          var threadCpuTimes = processThreadCpuTimes[processLabel];
+
+          var sortedThreads = threadCpuTimes.Keys.ToList();
+          sortedThreads.Sort((a, b) => -threadCpuTimes[a].CompareTo(threadCpuTimes[b]));
+
+          foreach (var threadLabel in sortedThreads)
+          {
+            var threadCpuTime = threadCpuTimes[threadLabel];
+            profile.Comment.Add(GetStringId($"    {threadLabel} {threadCpuTime:F} ms ({threadCpuTime / wallTimeMs:P})"));
+          }
+        }
+      }
+      else
+      {
+        profile.Comment.Add(GetStringId("No samples exported"));
+      }
       using (FileStream output = File.Create(outputFileName))
       {
         using (GZipStream gzip = new GZipStream(output, CompressionMode.Compress))
@@ -191,7 +279,7 @@ namespace EtwToPprof
         locationProto.Id = locationId;
 
         pb.Line line;
-        if (includeInlinedFunctions && stackSymbol.InlinedFunctionNames != null)
+        if (options.includeInlinedFunctions && stackSymbol.InlinedFunctionNames != null)
         {
           foreach (var inlineFunctionName in stackSymbol.InlinedFunctionNames)
           {
@@ -276,6 +364,8 @@ namespace EtwToPprof
       return stringId;
     }
 
+    private readonly Options options;
+
     Dictionary<Location, ulong> locations;
     ulong nextLocationId;
 
@@ -285,10 +375,14 @@ namespace EtwToPprof
     Dictionary<string, long> strings;
     long nextStringId;
 
-    private readonly bool includeInlinedFunctions;
-    private readonly bool includeProcessAndThreadIds;
-
     Regex stripSourceFileNamePrefixRegex;
+
+    decimal wallTimeStart = decimal.MaxValue;
+    decimal wallTimeEnd = 0;
+
+    decimal totalCpuTime = 0;
+    Dictionary<string, decimal> processCpuTimes = new Dictionary<string, decimal>();
+    Dictionary<string, Dictionary<string, decimal>> processThreadCpuTimes = new Dictionary<string, Dictionary<string, decimal>>();
 
     pb.Profile profile;
   }

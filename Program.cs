@@ -14,7 +14,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 using CommandLine;
 using CommandLine.Text;
@@ -75,9 +74,16 @@ namespace EtwToPprof
               HelpText = "End of time range to export in seconds")]
       public decimal? timeEnd { get; set; }
 
+      [Option("includeProcessIds", Required = false, Default = false,
+              HelpText = "Whether process ids are included in the exported profile.")]
+      public bool includeProcessIds { get; set; }
+
       [Option("includeProcessAndThreadIds", Required = false, Default = false,
               HelpText = "Whether process and thread ids are included in the exported profile.")]
       public bool includeProcessAndThreadIds { get; set; }
+
+      [Option("loadSymbols", Required = false, Default = true, HelpText = "Whether symbols should be loaded.")]
+      public bool? loadSymbols { get; set; }
     }
 
     static void Main(string[] args)
@@ -94,33 +100,44 @@ namespace EtwToPprof
 
         trace.Process();
 
-        ISymbolDataSource symbolData = pendingSymbolData.Result;
+        if (opts.loadSymbols ?? true)
+        {
+          ISymbolDataSource symbolData = pendingSymbolData.Result;
+          var symbolProgress = new Progress<SymbolLoadingProgress>(progress =>
+          {
+            Console.Write("\r{0:P} {1} of {2} symbols processed ({3} loaded)",
+                          (double)progress.ImagesProcessed / progress.ImagesTotal,
+                          progress.ImagesProcessed,
+                          progress.ImagesTotal,
+                          progress.ImagesLoaded);
+          });
+          symbolData.LoadSymbolsAsync(
+              SymCachePath.Automatic, SymbolPath.Automatic, symbolProgress)
+              .GetAwaiter().GetResult();
+          Console.WriteLine();
+        }
+
         ICpuSampleDataSource cpuSampleData = pendingCpuSampleData.Result;
 
-        var symbolProgress = new Progress<SymbolLoadingProgress>(progress =>
-        {
-          Console.Write("\r{0:P} {1} of {2} symbols processed ({3} loaded)",
-                        (double)progress.ImagesProcessed / progress.ImagesTotal,
-                        progress.ImagesProcessed,
-                        progress.ImagesTotal,
-                        progress.ImagesLoaded);
-        });
-        symbolData.LoadSymbolsAsync(
-            SymCachePath.Automatic, SymbolPath.Automatic, symbolProgress)
-            .GetAwaiter().GetResult();
-        Console.WriteLine();
+        var profileOpts = new ProfileWriter.Options();
 
-        var profileWriter = new ProfileWriter(opts.etlFileName,
-                                              opts.includeInlinedFunctions,
-                                              opts.includeProcessAndThreadIds,
-                                              opts.stripSourceFileNamePrefix);
+        profileOpts.etlFileName = opts.etlFileName;
+        profileOpts.includeInlinedFunctions = opts.includeInlinedFunctions;
+        profileOpts.includeProcessIds = opts.includeProcessIds;
+        profileOpts.includeProcessAndThreadIds = opts.includeProcessAndThreadIds;
+        profileOpts.stripSourceFileNamePrefix = opts.stripSourceFileNamePrefix;
 
-        var timeStart = opts.timeStart ?? 0;
-        var timeEnd = opts.timeEnd ?? decimal.MaxValue;
+        profileOpts.timeStart = opts.timeStart ?? 0;
+        profileOpts.timeEnd = opts.timeEnd ?? decimal.MaxValue;
 
         var exportAllProcesses = opts.processFilter == "*";
-        var processFilterSet = new HashSet<string>(
+        if (!exportAllProcesses)
+        {
+          profileOpts.processFilterSet = new HashSet<string>(
             opts.processFilter.Trim().Split(",", StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        var profileWriter = new ProfileWriter(profileOpts);
 
         for (int i = 0; i < cpuSampleData.Samples.Count; i++)
         {
@@ -129,29 +146,7 @@ namespace EtwToPprof
             Console.Write("\r{0:P} {1} of {2} samples processed",
                 (double)i / cpuSampleData.Samples.Count, i, cpuSampleData.Samples.Count);
           }
-
-          var cpuSample = cpuSampleData.Samples[i];
-
-          if ((cpuSample.IsExecutingDeferredProcedureCall ?? false) ||
-              (cpuSample.IsExecutingInterruptServicingRoutine ?? false))
-            continue;
-
-          if (!exportAllProcesses)
-          {
-            var processImage = cpuSample.Process.Images
-                .FirstOrDefault(image => image.FileName == cpuSample.Process.ImageName);
-
-            string imagePath = processImage?.Path ?? cpuSample.Process.ImageName;
-
-            if (!processFilterSet.Any(filter => imagePath.Contains(filter.Replace("/", "\\"))))
-              continue;
-          }
-
-          var timestamp = cpuSample.Timestamp.RelativeTimestamp.TotalSeconds;
-          if (timestamp < timeStart || timestamp > timeEnd)
-            continue;
-
-          profileWriter.AddSample(cpuSample);
+          profileWriter.AddSample(cpuSampleData.Samples[i]);
         }
         Console.WriteLine();
 
