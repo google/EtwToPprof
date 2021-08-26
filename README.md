@@ -54,6 +54,8 @@ Export inlined functions and thread/process ids:
 
     --includeProcessAndThreadIds    (Default: false) Whether process and thread ids are included in the exported profile.
 
+    --splitChromeProcesses          (Default: true) Whether chrome.exe processes are split by type (parsed from command line).
+
     --loadSymbols                   (Default: true) Whether symbols should be loaded.
 
     --help                          Display this help screen.

@@ -37,6 +37,7 @@ namespace EtwToPprof
       public bool includeInlinedFunctions { get; set; }
       public bool includeProcessIds { get; set; }
       public bool includeProcessAndThreadIds { get; set; }
+      public bool splitChromeProcesses { get; set; }
       public string stripSourceFileNamePrefix { get; set; }
       public decimal timeStart { get; set; }
       public decimal timeEnd { get; set; }
@@ -123,9 +124,37 @@ namespace EtwToPprof
           GetPseudoLocationId(processId, processName, sample.Thread?.StartAddress, threadLabel));
 
         string processLabel = processName;
+        if (options.splitChromeProcesses && processName == "chrome.exe" &&
+            sample.Process.CommandLine != null)
+        {
+          var commandLineSplit = sample.Process.CommandLine.Split();
+          foreach (string commandLineArg in commandLineSplit)
+          {
+            const string kProcessTypeParam = "--type=";
+            if (commandLineArg.StartsWith(kProcessTypeParam))
+            {
+              string chromeProcessType = commandLineArg.Substring(kProcessTypeParam.Length);
+
+              const string kUtilityProcessType = "utility";
+              const string kUtilitySubTypeParam = "--utility-sub-type=";
+              if (chromeProcessType == kUtilityProcessType)
+              {
+                var utilitySubType = commandLineSplit.First(s => s.StartsWith(kUtilitySubTypeParam));
+                if (utilitySubType != null)
+                {
+                  processLabel = processLabel +
+                      $" ({utilitySubType.Substring(kUtilitySubTypeParam.Length)})";
+                  break;
+                }
+              }
+
+              processLabel = processLabel + $" ({chromeProcessType})";
+            }
+          }
+        }
         if (options.includeProcessIds || options.includeProcessAndThreadIds)
         {
-          processLabel = String.Format("{0} ({1})", processName, processId);
+          processLabel = processLabel + $" ({processId})";
         }
         sampleProto.LocationId.Add(
           GetPseudoLocationId(processId, processName, sample.Process.ObjectAddress, processLabel));

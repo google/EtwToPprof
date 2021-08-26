@@ -82,6 +82,10 @@ namespace EtwToPprof
               HelpText = "Whether process and thread ids are included in the exported profile.")]
       public bool includeProcessAndThreadIds { get; set; }
 
+      [Option("splitChromeProcesses", Required = false, Default = true,
+              HelpText = "Whether chrome.exe processes are split by type (parsed from command line).")]
+      public bool splitChromeProcesses { get; set; }
+
       [Option("loadSymbols", Required = false, Default = true, HelpText = "Whether symbols should be loaded.")]
       public bool? loadSymbols { get; set; }
     }
@@ -120,13 +124,12 @@ namespace EtwToPprof
         ICpuSampleDataSource cpuSampleData = pendingCpuSampleData.Result;
 
         var profileOpts = new ProfileWriter.Options();
-
         profileOpts.etlFileName = opts.etlFileName;
         profileOpts.includeInlinedFunctions = opts.includeInlinedFunctions;
         profileOpts.includeProcessIds = opts.includeProcessIds;
         profileOpts.includeProcessAndThreadIds = opts.includeProcessAndThreadIds;
+        profileOpts.splitChromeProcesses = opts.splitChromeProcesses;
         profileOpts.stripSourceFileNamePrefix = opts.stripSourceFileNamePrefix;
-
         profileOpts.timeStart = opts.timeStart ?? 0;
         profileOpts.timeEnd = opts.timeEnd ?? decimal.MaxValue;
 
