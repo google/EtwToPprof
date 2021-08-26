@@ -50,7 +50,11 @@ Export inlined functions and thread/process ids:
 
     --timeEnd                       End of time range to export in seconds
 
+    --includeProcessIds             (Default: false) Whether process ids are included in the exported profile.
+
     --includeProcessAndThreadIds    (Default: false) Whether process and thread ids are included in the exported profile.
+
+    --loadSymbols                   (Default: true) Whether symbols should be loaded.
 
     --help                          Display this help screen.
 
