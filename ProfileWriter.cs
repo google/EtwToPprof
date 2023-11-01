@@ -114,7 +114,7 @@ namespace EtwToPprof
         }
         string processName = sample.Process.ImageName;
         string threadLabel = sample.Thread?.Name;
-        if (threadLabel == null || threadLabel == "")
+        if (threadLabel == null || threadLabel == "" || threadLabel.StartsWith("0x"))
           threadLabel = "anonymous thread";
         if (options.includeProcessAndThreadIds)
         {
