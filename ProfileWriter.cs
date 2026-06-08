@@ -1,4 +1,4 @@
-﻿// Copyright 2020 Google LLC
+// Copyright 2020 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -67,6 +67,16 @@ namespace EtwToPprof
 
       functions = new Dictionary<Function, ulong>();
       nextFunctionId = 1;
+
+      mappings = new Dictionary<string, ulong>();
+      nextMappingId = 1;
+
+      unsymbolizedLocations = new Dictionary<ulong, ulong>();
+
+      mappingsWithUnsymbolized = new HashSet<ulong>();
+      // Maps mapping ID -> absolute base address of the loaded image.
+      // Used to convert absolute VAs to RVAs for Location.address.
+      mappingBaseAddresses = new Dictionary<ulong, ulong>();
     }
 
     public void AddSample(ICpuSample sample)
@@ -79,7 +89,7 @@ namespace EtwToPprof
       if (timestamp < options.timeStart || timestamp > options.timeEnd)
         return;
 
-      if (options.processFilterSet?.Count != 0)
+      if (options.processFilterSet?.Count > 0)
       {
         var processImage = sample.Process.Images.FirstOrDefault(
             image => image.FileName == sample.Process.ImageName);
@@ -102,14 +112,12 @@ namespace EtwToPprof
         {
           if (stackFrame.HasValue && stackFrame.Symbol != null)
           {
-            sampleProto.LocationId.Add(GetLocationId(stackFrame.Symbol));
+            sampleProto.LocationId.Add(GetLocationId(stackFrame.Symbol, stackFrame.Address));
           }
-          else
+          else if (stackFrame.HasValue)
           {
-            string imageName = stackFrame.Image?.FileName ?? "<unknown>";
-            string functionLabel = "<unknown>";
             sampleProto.LocationId.Add(
-              GetPseudoLocationId(processId, imageName, null, functionLabel));
+              GetUnsymbolizedLocationId(stackFrame.Address, stackFrame.Image));
           }
         }
         string processName = sample.Process.ImageName;
@@ -120,8 +128,12 @@ namespace EtwToPprof
         {
           threadLabel = String.Format("{0} ({1})", threadLabel, sample.Thread?.Id ?? 0);
         }
+        // When process IDs are not included, use 0/null so that processes
+        // with the same label merge into a single flame graph entry.
+        int threadPseudoProcessId = (options.includeProcessIds || options.includeProcessAndThreadIds)
+            ? processId : 0;
         sampleProto.LocationId.Add(
-          GetPseudoLocationId(processId, processName, sample.Thread?.StartAddress, threadLabel));
+          GetPseudoLocationId(threadPseudoProcessId, processName, sample.Thread?.StartAddress, threadLabel));
 
         string processLabel = processName;
         if (options.splitChromeProcesses && processName == "chrome.exe" &&
@@ -156,8 +168,12 @@ namespace EtwToPprof
         {
           processLabel = processLabel + $" ({processId})";
         }
+        // When process IDs are not included, use 0/null so that processes
+        // with the same label merge into a single flame graph entry.
+        int pseudoProcessId = (options.includeProcessIds || options.includeProcessAndThreadIds)
+            ? processId : 0;
         sampleProto.LocationId.Add(
-          GetPseudoLocationId(processId, processName, sample.Process.ObjectAddress, processLabel));
+          GetPseudoLocationId(pseudoProcessId, processName, null, processLabel));
 
         if (processThreadCpuTimes.ContainsKey(processLabel))
         {
@@ -225,6 +241,16 @@ namespace EtwToPprof
       {
         profile.Comment.Add(GetStringId("No samples exported"));
       }
+      // Set Has* flags on mappings: only claim symbolization for mappings
+      // where all locations were successfully resolved.
+      foreach (var mappingProto in profile.Mapping)
+      {
+        bool fullySymbolized = !mappingsWithUnsymbolized.Contains(mappingProto.Id);
+        mappingProto.HasFunctions = fullySymbolized;
+        mappingProto.HasFilenames = fullySymbolized;
+        mappingProto.HasLineNumbers = fullySymbolized;
+        mappingProto.HasInlineFrames = fullySymbolized && options.includeInlinedFunctions;
+      }
       using (FileStream output = File.Create(outputFileName))
       {
         using (GZipStream gzip = new GZipStream(output, CompressionMode.Compress))
@@ -278,6 +304,8 @@ namespace EtwToPprof
 
         var locationProto = new pb.Location();
         locationProto.Id = locationId;
+        if (address.HasValue)
+          locationProto.Address = unchecked((ulong)address.Value.Value);
 
         var line = new pb.Line();
         line.FunctionId = GetFunctionId(imageName, label);
@@ -288,7 +316,34 @@ namespace EtwToPprof
       return locationId;
     }
 
-    ulong GetLocationId(IStackSymbol stackSymbol)
+    ulong GetUnsymbolizedLocationId(Address address, IImage image)
+    {
+      // Use the raw address as the dedup key for unsymbolized frames.
+      ulong addr = unchecked((ulong)address.Value);
+      if (!unsymbolizedLocations.TryGetValue(addr, out ulong locationId))
+      {
+        locationId = nextLocationId++;
+        unsymbolizedLocations.Add(addr, locationId);
+
+        var locationProto = new pb.Location();
+        locationProto.Id = locationId;
+        locationProto.Address = addr;
+        if (image != null)
+        {
+          ulong mid = GetMappingId(image);
+          locationProto.MappingId = mid;
+          // Convert absolute VA to RVA (see comment in GetMappingId).
+          locationProto.Address = addr - mappingBaseAddresses[mid];
+          mappingsWithUnsymbolized.Add(mid);
+        }
+
+        // No Line entries — leaves the location bare for offline symbolization.
+        profile.Location.Add(locationProto);
+      }
+      return locationId;
+    }
+
+    ulong GetLocationId(IStackSymbol stackSymbol, Address instructionAddress)
     {
       var processId = stackSymbol.Image?.ProcessId ?? 0;
       var imageName = stackSymbol.Image?.FileName;
@@ -306,6 +361,15 @@ namespace EtwToPprof
 
         var locationProto = new pb.Location();
         locationProto.Id = locationId;
+        // Store the RVA (see comment in GetMappingId).
+        ulong absAddr = unchecked((ulong)instructionAddress.Value);
+        locationProto.Address = absAddr;
+        if (stackSymbol.Image != null)
+        {
+          ulong mid = GetMappingId(stackSymbol.Image);
+          locationProto.MappingId = mid;
+          locationProto.Address = absAddr - mappingBaseAddresses[mid];
+        }
 
         pb.Line line;
         if (options.includeInlinedFunctions && stackSymbol.InlinedFunctionNames != null)
@@ -396,10 +460,65 @@ namespace EtwToPprof
     private readonly Options options;
 
     Dictionary<Location, ulong> locations;
+    Dictionary<ulong, ulong> unsymbolizedLocations;
     ulong nextLocationId;
 
     Dictionary<Function, ulong> functions;
     ulong nextFunctionId;
+
+    Dictionary<string, ulong> mappings;
+    ulong nextMappingId;
+    HashSet<ulong> mappingsWithUnsymbolized;
+    // Maps mapping ID -> absolute base address of the loaded image.
+    // Used to convert absolute VAs to RVAs for Location.address.
+    Dictionary<ulong, ulong> mappingBaseAddresses;
+
+    static string FormatBreakpadBuildId(IImage image)
+    {
+      if (image.Pdb == null)
+        return null;
+      return image.Pdb.Id.ToString("N").ToLowerInvariant()
+           + image.Pdb.Age.ToString("x");
+    }
+
+    ulong GetMappingId(IImage image)
+    {
+      // Key by image path to deduplicate mappings for the same binary.
+      string key = image.Path ?? image.FileName ?? "<unknown>";
+      ulong mappingId;
+      if (!mappings.TryGetValue(key, out mappingId))
+      {
+        mappingId = nextMappingId++;
+        mappings.Add(key, mappingId);
+
+        var mappingProto = new pb.Mapping();
+        mappingProto.Id = mappingId;
+
+        // Workaround for pprof symbolization servers that assume ELF binaries:
+        // Some servers reject memory_start values that don't match standard
+        // Linux load addresses (0, 0x400000, 0x8048000) when ElfHeaders are
+        // absent. Windows PE/PDB binaries never have ElfHeaders, so any real
+        // Windows load address causes a symbolization failure.
+        // By setting memory_start=0 and memory_limit=module_size, and storing
+        // RVAs in Location.address, we ensure compatibility with servers that
+        // use memory_start==0 as a passthrough for RVA-based symbol lookup.
+        ulong baseAddr = unchecked((ulong)image.AddressRange.BaseAddress.Value);
+        mappingBaseAddresses.Add(mappingId, baseAddr);
+        mappingProto.MemoryStart = 0;
+        mappingProto.MemoryLimit = (ulong)image.Size.Bytes;
+        mappingProto.FileOffset = 0;
+        mappingProto.Filename = GetStringId(image.Path ?? image.FileName ?? "<unknown>");
+
+        string buildId = FormatBreakpadBuildId(image);
+        if (buildId != null)
+          mappingProto.BuildId = GetStringId(buildId);
+
+        // Has* flags are finalized in Write() after all samples are processed.
+
+        profile.Mapping.Add(mappingProto);
+      }
+      return mappingId;
+    }
 
     Dictionary<string, long> strings;
     long nextStringId;
