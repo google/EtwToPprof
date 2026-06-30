@@ -11,7 +11,9 @@ symbolizing traces if set, otherwise it uses WPA defaults.
 
 ## Building
 
-Build the provided Visual Studio Solution with VS 2019.
+Build with the .NET 10 SDK:
+
+    dotnet build -c Release
 
 ### Nuget dependencies (included in solution)
 - CommandLineParser v2.8.0
@@ -36,6 +38,14 @@ Export inlined functions and thread/process ids:
 
     EtwToPprof --includeInlinedFunctions --includeProcessAndThreadIds trace.etl
 
+Merge all chrome.exe processes under a single heading:
+
+    EtwToPprof --noSplitChromeProcesses trace.etl
+
+List all loaded images with their Breakpad build IDs:
+
+    EtwToPprof --listImageIds trace.etl
+
 ## Command line flags
 
     -o, --outputFileName            (Default: profile.pb.gz) Output file name for gzipped pprof profile.
@@ -56,13 +66,24 @@ Export inlined functions and thread/process ids:
 
     --splitChromeProcesses          (Default: true) Whether chrome.exe processes are split by type (parsed from command line).
 
+    --noSplitChromeProcesses        (Default: false) Merge all chrome.exe processes under a single heading.
+
     --loadSymbols                   (Default: true) Whether symbols should be loaded.
+
+    --listImageIds                  (Default: false) List all unique image (module) names with Breakpad build IDs and exit.
 
     --help                          Display this help screen.
 
     --version                       Display version information.
 
     etlFileName (pos. 0)            Required. ETL trace file name.
+
+## Offline Symbolization
+
+Profiles include Mapping entries with Breakpad-format build IDs and RVA-based
+addresses. Unsymbolized frames are emitted as bare locations (address + mapping
+only) so that pprof symbolization servers can resolve them using symbol servers
+without requiring local PDBs.
 
 ## Disclaimer:
 

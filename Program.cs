@@ -14,6 +14,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 using CommandLine;
 using CommandLine.Text;
@@ -86,8 +87,16 @@ namespace EtwToPprof
               HelpText = "Whether chrome.exe processes are split by type (parsed from command line).")]
       public bool splitChromeProcesses { get; set; }
 
+      [Option("noSplitChromeProcesses", Required = false, Default = false,
+              HelpText = "Merge all chrome.exe processes under a single heading.")]
+      public bool noSplitChromeProcesses { get; set; }
+
       [Option("loadSymbols", Required = false, Default = true, HelpText = "Whether symbols should be loaded.")]
       public bool? loadSymbols { get; set; }
+
+      [Option("listImageIds", Required = false, Default = false,
+              HelpText = "List all unique image (module) names found in the trace and exit.")]
+      public bool listImageIds { get; set; }
     }
 
     static void Main(string[] args)
@@ -123,12 +132,61 @@ namespace EtwToPprof
 
         ICpuSampleDataSource cpuSampleData = pendingCpuSampleData.Result;
 
+        // --listImageIds: list all unique images with their Breakpad build IDs and exit.
+        if (opts.listImageIds)
+        {
+          var images = new Dictionary<string, List<(string path, string buildId, long timestamp)>>();
+          var seenProcessIds = new HashSet<int>();
+          foreach (var sample in cpuSampleData.Samples)
+          {
+            if (sample.Process == null)
+              continue;
+            if (!seenProcessIds.Add(sample.Process.Id))
+              continue;
+            foreach (var image in sample.Process.Images)
+            {
+              string fileName = image.FileName;
+              if (fileName == null)
+                continue;
+              if (!images.ContainsKey(fileName))
+                images[fileName] = new List<(string, string, long)>();
+
+              string buildId = null;
+              if (image.Pdb != null)
+              {
+                buildId = image.Pdb.Id.ToString("N").ToLowerInvariant()
+                        + image.Pdb.Age.ToString("x");
+              }
+              long timestamp = image.Timestamp;
+              string path = image.Path;
+
+              if (!images[fileName].Any(e => e.buildId == buildId && e.timestamp == timestamp))
+              {
+                images[fileName].Add((path, buildId, timestamp));
+              }
+            }
+          }
+
+          foreach (var kvp in images.OrderBy(k => k.Key))
+          {
+            Console.WriteLine($"{kvp.Key}:");
+            foreach (var (path, buildId, timestamp) in kvp.Value)
+            {
+              Console.WriteLine($"  Path: {path}");
+              Console.WriteLine($"  BuildId: {buildId ?? "(none)"}");
+              Console.WriteLine($"  Timestamp: {timestamp}");
+              Console.WriteLine();
+            }
+          }
+          return;
+        }
+
         var profileOpts = new ProfileWriter.Options();
         profileOpts.etlFileName = opts.etlFileName;
         profileOpts.includeInlinedFunctions = opts.includeInlinedFunctions;
         profileOpts.includeProcessIds = opts.includeProcessIds;
         profileOpts.includeProcessAndThreadIds = opts.includeProcessAndThreadIds;
-        profileOpts.splitChromeProcesses = opts.splitChromeProcesses;
+        profileOpts.splitChromeProcesses = opts.splitChromeProcesses && !opts.noSplitChromeProcesses;
         profileOpts.stripSourceFileNamePrefix = opts.stripSourceFileNamePrefix;
         profileOpts.timeStart = opts.timeStart ?? 0;
         profileOpts.timeEnd = opts.timeEnd ?? decimal.MaxValue;
